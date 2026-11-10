@@ -1,4 +1,5 @@
 #pragma once
+#include <BlePageTurner.h>
 #include <ArduinoJson.h>
 #include <DataDir.h>
 #include <Epub/ReaderRenderSpec.h>
@@ -15,6 +16,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   friend class PersistableStore<CrossPointSettings>;
 
  public:
+  bleturner::Config ble;
   enum SLEEP_SCREEN_MODE {
     DARK = 0,
     LIGHT = 1,
@@ -194,6 +196,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
   uint8_t statusBarBookProgressPercentage = 1;
+  uint8_t statusBarChapterProgressPercentage = 0;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
   uint8_t statusBarTitle = CHAPTER_TITLE;
@@ -347,9 +350,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
   // Language setting (Language enum index, default 0 = EN)
-  // CrossMosa：預設繁體中文（Language::TC = 1）。這是繁中客製韌體，
-  // 讓使用者不必首次開機先切一次語言。
-  uint8_t language = 1;
+  // This BLE experiment builds only English; stored TC codes fall back to EN.
+  uint8_t language = 0;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
@@ -389,6 +391,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   struct StatusBarSpec {
     bool showChapterPageCount = false;
     bool showBookProgressPercent = false;
+    bool showChapterProgressPercent = false;
     uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
     bool showBattery = false;
     bool showBatteryPercent = false;
@@ -405,7 +408,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
-      return showChapterPageCount || showBookProgressPercent || showsTitle() || showBattery ||
+      return showChapterPageCount || showBookProgressPercent || showChapterProgressPercent || showsTitle() || showBattery ||
              (showsClock() && clockAvailable);
     }
   };

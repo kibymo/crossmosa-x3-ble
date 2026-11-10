@@ -5,6 +5,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <BlePageTurner.h>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -79,6 +80,9 @@ class ActivityManager {
   }
   ~ActivityManager() { assert(false); /* should never be called */ };
 
+  std::atomic<uint32_t> bleVisit{0};
+  std::atomic<bool> blePageShown{false};
+  bleturner::Scene bleScene() const;
   void begin();
   void loop();
 

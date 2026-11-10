@@ -22,7 +22,8 @@ class EpubReaderMenuActivity final : public Activity {
     TOGGLE_BOOKMARK,
     SCREENSHOT,
     DISPLAY_QR,
-    DELETE_CACHE
+    DELETE_CACHE,
+    GO_TO_CHAPTER_PERCENT
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -54,6 +55,7 @@ class EpubReaderMenuActivity final : public Activity {
   // True while the button press that closed the popup is still held; its release
   // must not fall through to the menu's own Back/Confirm handlers.
   bool popupClosing = false;
+  int pendingProgressAction = -1;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
   const std::vector<StrId> clearCacheLabels = {StrId::STR_CLEAR_CACHE_KEEP_PROGRESS,

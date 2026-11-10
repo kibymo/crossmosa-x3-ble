@@ -11,6 +11,11 @@
 #include <builtinFonts/notosans_16_regular.h>
 #include <builtinFonts/notosans_18_bold.h>
 #include <builtinFonts/notosans_18_regular.h>
+#ifdef CROSSMOSA_ENGLISH_UI
+#include <builtinFonts/en_ui_10_regular.h>
+#include <builtinFonts/en_ui_14_regular.h>
+#include <builtinFonts/en_ui_14_bold.h>
+#else
 #include <builtinFonts/ubuntu_10_bold.h>
 #include <builtinFonts/ubuntu_10_regular.h>
 #include <builtinFonts/ubuntu_14_bold.h>
@@ -18,3 +23,5 @@
 // 首要問題，而「留 10 + 留 12 + 再加 14」會爆 flash，所以是【換掉】12px 而非新增。
 // 變數名 ui12* 保留不動，資料指向 ubuntu_14（見 main.cpp）。
 #include <builtinFonts/ubuntu_14_regular.h>
+
+#endif

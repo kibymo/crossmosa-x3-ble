@@ -1,3 +1,41 @@
+# CrossMosa X3 BLE — v3.27 繁體中文衍生版
+
+非官方版本，主要 clone 自 [anki630/crossmosa](https://github.com/anki630/crossmosa)，基底為 v2.1.0、commit `03c41f8779b7ba6a0d38493825b8aa2ed9d26e0f`。這不是 CrossMosa 官方 v3.27；本修改系列韌體版本為 `2.1.0-ble-x3.27-zh`，目前針對 Xteink X3。
+
+## 來源與署名
+
+- CrossMosa：中文、直排、注音與閱讀引擎基底。
+- [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader)：BLE 翻頁整合，commit `42d58daaabcf469a2e5e1ba871714fb9dcf51d29`。
+- FreeInk BleKeyboardHost：BLE HID 底層，commit `5e94fe7480f019c89fbf691aef87523eb1b46704`。
+- NimBLE-Arduino 2.5.1：藍牙函式庫。
+- [CrossMux](https://github.com/0x1abin/crossmux)：部分設定介面與藍牙圖示，commit `a6fd569f7552db4ea1a6550ced7bc06568ae0e61`。已核對該 commit 的 LICENSE 為 MIT；先前私人說明中的 GPL 標示有誤。
+
+保留原作者署名與授權。見 [完整來源紀錄](docs/ble-port/PROVENANCE.txt)、根目錄 LICENSE、各模組 LICENSE 及 licenses/CrossMux-MIT.txt；第三方相依套件保留各自授權。
+
+## 本修改系列
+
+加入 BLE 配對、按鍵學習與翻頁、藍牙設定介面、本章百分比與狀態列；改善 BLE 同章閱讀、閒置 CPU 降頻、跨章直排記憶體失敗處理、缺卡休眠時間畫面。v3.27 在頁面載入前回收可重建字型點陣快取，記憶體仍不足時保留章節索引及閱讀位置，避免不必要的索引重建。
+
+## 安裝及驗證狀態
+
+從本儲存庫 Releases 下載 `crossmosa-x3-ble-3.27-zh.zip`，核對內附 SHA256SUMS，解壓後將 update.bin、diag.on 放到 SD 根目錄，依原更新方式操作。保留配對與閱讀設定，不必手動清除章節快取。
+
+完整編譯與桌面回歸測試通過。使用者回報 v3.27 目前使用正常；長時間閱讀、多章連續閱讀、圖片頁與注音的實機驗證仍不完整，不保證耗電改善幅度。詳見 [驗證紀錄](docs/ble-port/VALIDATION.zh-TW.md)。
+
+## 編譯
+
+使用 PlatformIO Core 6.1.18，在專案根目錄執行：
+
+```sh
+pio run -e gh_release
+```
+
+更新映像位於 `.pio/build/gh_release/firmware.bin`。依賴與設定見 platformio.ini；第一次編譯需要網路下載工具鏈。測試位於 test/ 與 lib/BleKeyboardHost/test/。
+
+---
+
+以下保留上游 README 作為背景參考；其中的上游版本、下載及功能敘述不代表本衍生版。
+
 ![CrossMosa — 台灣黑熊與月牙](docs/promo/logo.png)
 
 # CrossMosa

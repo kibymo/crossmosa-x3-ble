@@ -44,6 +44,10 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // Called under RenderLock, after a reader page is shown, before probing readiness.
+  virtual void prepareForBle() {}
+  virtual bool canRenderWithBle() { return false; }
+  virtual bool bleReady() const { return true; }
   // v327：全域淺睡眠（黑名單制）—— 預設可以；WiFi／檔案傳輸／Calibre（WiFi 開著睡等於沒睡，退出時本來就重啟）、
   //   SD 韌體更新、當機、開機、桌布畫面回 false。淺睡眠只把 framebuffer 留在 RAM，跟畫面內容無關。
   virtual bool supportsLightSleep() const { return true; }

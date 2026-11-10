@@ -1,0 +1,45 @@
+CrossMosa base: 03c41f8779b7ba6a0d38493825b8aa2ed9d26e0f (v2.1.0)
+CrossPoint BlePageTurner: 42d58daaabcf469a2e5e1ba871714fb9dcf51d29 (2.0.0)
+FreeInk BleKeyboardHost: 5e94fe7480f019c89fbf691aef87523eb1b46704
+NimBLE-Arduino: 2.5.1
+PlatformIO Core used for build: 6.1.18
+
+v3.12 changes: persistent static 4096-byte BLE starter, notification wakeup; preserved pre-panic log ring until report save; RISC-V exception PC/cause/value. Crash root cause remains unconfirmed.
+
+v3.13: keep BLE for already laid-out cached text pages, bounded mini bitmap during BLE, preserve reader edges during paint/reconnect. Hardware validation pending.
+
+v3.14: settings-only post-init reserve 24 KiB free and largest; pre-init and reader guards unchanged. Runtime regression uses recorded heaps and settings-to-reader stop. Hardware validation pending.
+
+v3.15: settings pre-init largest uses the same 24 KiB limit as post-init; retain 80 KiB pre-init total, reader and S3 guards. Added exact pre-init log regression and boundary checks; diagnostic reports effective limit.
+
+v3.16: user-approved disabled bidi/shaping via CROSSMOSA_DISABLE_BIDI=1; original logical text fallback; removes two 1536-byte static buffers and mutex. Zhuyin and reader memory guards retained.
+
+v3.17: restore Traditional Chinese and built-in CJK UI fonts, keep low-RAM UI without extra SD fallback sizes. Retain v3.16 bidi removal and all BLE guards. v3.16 confirmed working by user; v3.17 hardware validation pending.
+
+
+v3.18: CrossMux-style Bluetooth settings panels and connected status-bar marker.
+Reference: https://github.com/0x1abin/crossmux
+Pinned reference: a6fd569f7552db4ea1a6550ced7bc06568ae0e61 (MIT; verified LICENSE at the pinned commit)
+Adapted src/components/icons/bluetooth.h (16x16 bitmap), BaseTheme marker placement,
+and BleSettingsActivity menu/scan/paired/mapping organization to CrossMosa Activity API.
+No CrossMux radio/runtime or chapter/hold mappings imported. Existing pairing,
+key tables, RAM guards, CJK/vertical/Zhuyin retained. Chapter-jump/disconnect
+reported in v3.17 remains unresolved by this UI-only update.
+
+v3.19: include suspended partial sections in forward-page watermark check; wire fragmented-heap recovery to existing silent restart-to-reader after render-locked progress/state persistence. Keep memory thresholds and RTC restart guard. Host tests extract actual navigation and recovery functions; hardware validation pending.
+
+v3.20: chapter-only percentage scope in existing progress menu; retain current spine and use finalized pagination via existing percent-jump build path. Localized English/Traditional Chinese scope labels; no new font. Hardware validation pending.
+
+v3.21: defer progress scope result until its closing input is released; production input transition regression. Hardware validation pending.
+
+v3.22: independently persisted chapter percentage status text, estimated partial pagination marker; production text regression. Hardware validation pending.
+
+v3.23: user-requested removal of chapter prefix in status text; preserve numeric small face and estimation marker. Hardware validation pending.
+
+v3.24: complete chapter cache before selected remote startup; stable connected CPU idle at minimum 80 MHz, restore for activity. Existing radio parameters and memory guards retained. Hardware/current validation pending.
+
+v3.25: release retained font cache before full chapter build; 192-token/256-unit-at-word-boundary vertical scratch batches; exact output-cell reservation; local bad_alloc recovery with destructors, sticky parser OOM and safe partial handling; invalid TextBlock aborts instead of dropping columns. Preserves v3.24 BLE and idle power policy. Hardware validation pending.
+
+v3.26: sleep-time SD CID probe; built-in RTC snapshot when card unavailable or custom wallpaper missing; retain clock timezone/format in small internal NVS backup without rewriting unchanged data. No periodic sleep refresh. Hardware validation pending.
+
+v3.27: low-water retained glyph-cache reclamation before displayed-page load, one same-page retry after recoverable load OOM, and bounded OOM retries that preserve Section/cache/progress instead of entering corruption rebuild. Healthy warm cache preserved. Hardware validation pending.

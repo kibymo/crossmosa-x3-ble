@@ -1,0 +1,3 @@
+#pragma once
+#define FREEINK_LOG_TRANSPORT 1
+#define FREEINK_LOG_TRANSPORT_ROM_PRINTF 2

@@ -1,4 +1,5 @@
 #include "SettingsActivity.h"
+#include "BleSettingsActivity.h"
 
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
@@ -65,6 +66,7 @@ void SettingsActivity::rebuildSettingsLists() {
     controlsSettings.insert(controlsSettings.begin(),
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_BLE_REMOTE, SettingAction::Bluetooth));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
@@ -396,6 +398,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Bluetooth:
+        activityManager.pushActivity(std::make_unique<BleSettingsActivity>(renderer, mappedInput));
         break;
       case SettingAction::None:
         // Do nothing

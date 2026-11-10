@@ -20,6 +20,7 @@ namespace {
 enum MenuItem {
   ITEM_CHAPTER_PAGE_COUNT = 0,
   ITEM_BOOK_PROGRESS_PERCENTAGE,
+  ITEM_CHAPTER_PROGRESS_PERCENTAGE,
   ITEM_PROGRESS_BAR,
   ITEM_PROGRESS_BAR_THICKNESS,
   ITEM_TITLE,
@@ -38,6 +39,7 @@ constexpr int FULL_MENU_ITEMS = ITEM_COUNT;  // Items shown when RTC is availabl
 const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_CHAPTER_PAGE_COUNT,
     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
+    StrId::STR_CHAPTER_PROGRESS_PERCENTAGE,
     StrId::STR_PROGRESS_BAR,
     StrId::STR_PROGRESS_BAR_THICKNESS,
     StrId::STR_TITLE,
@@ -183,6 +185,9 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_CHAPTER_PAGE_COUNT:
       SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
       break;
+    case ITEM_CHAPTER_PROGRESS_PERCENTAGE:
+      SETTINGS.statusBarChapterProgressPercentage = (SETTINGS.statusBarChapterProgressPercentage + 1) % 2;
+      break;
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;
@@ -258,6 +263,8 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
         switch (index) {
           case ITEM_CHAPTER_PAGE_COUNT:
             return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+          case ITEM_CHAPTER_PROGRESS_PERCENTAGE:
+            return SETTINGS.statusBarChapterProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
           case ITEM_BOOK_PROGRESS_PERCENTAGE:
             return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
           case ITEM_PROGRESS_BAR:

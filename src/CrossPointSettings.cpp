@@ -1,4 +1,5 @@
 #include "CrossPointSettings.h"
+#include <BlePageTurnerJson.h>
 
 #include <Epub/VerticalText.h>  // v284：行距與直排欄距共用 COLUMN_PITCH_* 三個常數
 #include <I18n.h>
@@ -62,6 +63,7 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
 }
 
 void CrossPointSettings::toJson(JsonDocument& doc) const {
+  bleturner::writeJson(ble, doc);
   const CrossPointSettings& s = *this;
 
   for (const auto& info : getSettingsList()) {
@@ -117,7 +119,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   CrossPointSettings& s = *this;
-  bool needsResave = false;
+  bool needsResave = !bleturner::readJson(ble, doc);
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
@@ -303,6 +305,7 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   StatusBarSpec spec;
   spec.showChapterPageCount = statusBarChapterPageCount != 0;
   spec.showBookProgressPercent = statusBarBookProgressPercentage != 0;
+  spec.showChapterProgressPercent = statusBarChapterProgressPercentage != 0;
   spec.titleMode = statusBarTitle;
   spec.showBattery = statusBarBattery != 0;
   spec.showBatteryPercent = hideBatteryPercentage == HIDE_NEVER;

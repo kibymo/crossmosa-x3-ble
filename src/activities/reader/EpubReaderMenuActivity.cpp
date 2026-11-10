@@ -91,6 +91,14 @@ void EpubReaderMenuActivity::loop() {
       return;  // closing press still held
     }
     popupClosing = false;
+    if (pendingProgressAction >= 0) {
+      // Finish only after the popup's opening press has been released. The
+      // percentage selector also confirms on release, so never pass it that event.
+      setResult(MenuResult{.action = pendingProgressAction, .orientation = pendingOrientation});
+      pendingProgressAction = -1;
+      finish();
+      return;
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       return;  // swallow the release that closed the popup
@@ -110,6 +118,16 @@ void EpubReaderMenuActivity::loop() {
                          pendingOrientation = idx;
                          requestUpdate();
                        });
+      requestUpdate();
+      return;
+    }
+
+    if (selectedAction == MenuAction::GO_TO_PERCENT) {
+      const StrId scopes[] = {StrId::STR_GO_TO_BOOK_PERCENT, StrId::STR_GO_TO_CHAPTER_PERCENT};
+      optionPopup.show(StrId::STR_GO_TO_PERCENT, scopes, 2, 0, [this](int idx) {
+        const auto action = idx == 1 ? MenuAction::GO_TO_CHAPTER_PERCENT : MenuAction::GO_TO_PERCENT;
+        pendingProgressAction = static_cast<int>(action);
+      });
       requestUpdate();
       return;
     }

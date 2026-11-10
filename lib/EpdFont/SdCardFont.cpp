@@ -21,6 +21,8 @@
 
 #include "EpdFontFamily.h"
 
+extern "C" uint32_t crossmosaBleBitmapBudget() __attribute__((weak));
+
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdKernClassEntry) == 3, "EpdKernClassEntry must be 3 bytes to match .cpfont file layout");
@@ -190,13 +192,28 @@ struct MiniBitmapGrowth {
 
 MiniBitmapGrowth growMiniBitmap(uint8_t*& buf, uint32_t& capacity, const uint32_t needed) {
   MiniBitmapGrowth g;
-  if (buf && capacity >= needed) return g;
+  const uint32_t budget = crossmosaBleBitmapBudget ? crossmosaBleBitmapBudget() : 0;
+  if (budget && capacity > budget) {
+    heap_caps_free(buf);
+    buf = nullptr;
+    capacity = 0;
+  }
+  if (buf && capacity >= (budget && needed > budget ? budget : needed)) return g;
+  // Existing overflow-glyph handling draws anything outside this bounded cache.
+  if (budget && needed > budget) {
+    heap_caps_free(buf);
+    buf = static_cast<uint8_t*>(heap_caps_malloc(budget, MALLOC_CAP_DEFAULT));
+    capacity = buf ? budget : 0;
+    return g;
+  }
 
   constexpr uint32_t kStep = 8 * 1024;
   uint32_t want = needed > 0 ? needed : 1;
   if (want >= kStep - kPoisonOverhead && want <= UINT32_MAX - (kPoisonOverhead + kStep - 1)) {  // 溢位防呆（codex）
     want = ((want + kPoisonOverhead + kStep - 1) / kStep) * kStep - kPoisonOverhead;
   }
+
+  if (budget && want > budget) want = budget;
 
   heap_caps_free(buf);  // 先放：這塊內容每次重建都會整個重讀，不必 realloc 搬（也省掉兩塊並存的尖峰）
   buf = nullptr;

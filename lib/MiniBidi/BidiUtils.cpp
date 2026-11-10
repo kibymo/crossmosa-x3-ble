@@ -1,3 +1,20 @@
+#if defined(CROSSMOSA_DISABLE_BIDI) && CROSSMOSA_DISABLE_BIDI
+#include "BidiUtils.h"
+
+// X3 BLE build: use logical text order. False preserves the caller's existing
+// unprocessed-text path, including Chinese and Latin combining-mark handling.
+// No bidi buffers, mutex, direction classification or Arabic shaping are linked.
+namespace BidiUtils {
+bool startsWithRtl(const char*, int) { return false; }
+int detectParagraphLevel(const char*, int, int) { return 0; }
+bool isTransparentMark(uint32_t) { return false; }
+bool applyBidiVisual(const char*, std::string&, int) { return false; }
+bool computeVisualWordOrder(const std::vector<std::string>&, bool, std::vector<uint16_t>& visualOrder) {
+  visualOrder.clear();
+  return false;
+}
+}  // namespace BidiUtils
+#else
 #include "BidiUtils.h"
 
 extern "C" {
@@ -310,3 +327,5 @@ bool computeVisualWordOrder(const std::vector<std::string>& words, bool paragrap
 }
 
 }  // namespace BidiUtils
+
+#endif  // CROSSMOSA_DISABLE_BIDI

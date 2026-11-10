@@ -1,4 +1,5 @@
 #include "EpubReaderActivity.h"
+#include <BlePageTurner.h>
 
 #include <BitmapHelpers.h>
 #include <DataDir.h>
@@ -440,6 +441,38 @@ void EpubReaderActivity::onExit() {
   }
 }
 
+// Bluetooth reading needs a completed chapter cache before connecting.
+// Existing partial sessions re-enter the full-build path; active builders are
+// allowed to finish instead of repeatedly discarding their parser state.
+// ActivityManager calls this only under RenderLock with a shown page and chosen remote.
+bool EpubReaderActivity::canRenderWithBle() {
+  // Already laid-out text pages, including pages below a partial cache watermark.
+  // No parser may be active; jumps and images retain radio release.
+  if (!section || section->isBuilding() || pendingPageJump ||
+      pendingOffsetJump || pendingPercentJump || pendingScreenshot || !pendingAnchor.empty() || pendingCacheReset_ ||
+      pageLoadRetryCount != 0 || section->currentPage < 0 || section->currentPage >= section->pageCount)
+    return false;
+  auto page = section->loadPage(section->currentPage);
+  return page && !page->hasImages();
+}
+
+void EpubReaderActivity::prepareForBle() {
+  stopNextChapterPrebuild("ble");
+  if (!section || section->currentPage < 0) return;
+  if (section->isPartial() && !section->isBuilding()) {
+    // A chosen remote needs a complete chapter before radio startup, not a
+    // repeatedly suspended handful of pages. Re-enter the normal cache path.
+    nextPageNumber = section->currentPage;
+    section.reset();
+    requestUpdate();
+    return;
+  }
+  if (!section->isBuilding()) return;
+  // An already running build must finish; never manufacture another partial
+  // merely to start the radio. Full-chapter builds in render release the parser.
+  return;
+}
+
 void EpubReaderActivity::openReaderMenu() {
   const int currentPage = section ? section->currentPage + 1 : 0;
   const int totalPages = section ? section->estimatedTotalPages() : 0;
@@ -667,6 +700,7 @@ void EpubReaderActivity::emitBuildEnd(const char* why) {
 // v257：預排下一章（見 EpubReaderActivity.h 的 nextSection_ 註解）。三個函式都只在主任務 loop() 或持 RenderLock 的
 // render／onExit 呼叫；nextSection_ 的建立、建置、釋放一律在 RenderLock 內，與 render 的 !section 分支互斥。
 void EpubReaderActivity::maybeStartNextChapterPrebuild() {
+  if (SETTINGS.ble.enabled) return;  // Leave memory for the opted-in remote.
   if (g_prebuildDisabledThisBoot) return;
   if (!epub || !section || section->isBuilding() || section->isPartial() || nextSection_ || diagBuildActive) return;
   if (buildViewportWidth == 0 || footnoteDepth > 0) return;  // 註腳裡：「下一章」不是讀者要去的地方
@@ -1008,7 +1042,7 @@ void EpubReaderActivity::loop() {
   // render()); crossing this margin is the signal that the reader will actually need pages
   // past the watermark soon. Uses the last render's viewport so pagination matches the
   // partial being extended.
-  if (section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() && buildViewportWidth > 0 &&
+  if ((!SETTINGS.ble.enabled || !SETTINGS.ble.peerAddr[0]) && !bleturner::holdsHeap() && section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() && buildViewportWidth > 0 &&
       !partialRebuildStartFailed &&
       section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
     RenderLock lock;
@@ -1057,7 +1091,7 @@ void EpubReaderActivity::loop() {
   // 「能開門的那把鑰匙」永遠跑不到（複查 memory-major：maxAlloc<16KB 就停到下一次冷 render 才解）。
   // v193（複查）：有待補圖時這一圈不跑 tick —— 排在 tick 之後才解碼，等於把解碼推到 p2/p3 最碎的
   // 時刻（tick 剛擴張完 ParsedText 的逐詞小配置），正是最容易配不到解碼器的那一刻。
-  if (buildTickDue() && deferredDecodePage_ < 0 && !RenderLock::peek() && !gpio.wasAnyPressed() &&
+  if ((!SETTINGS.ble.enabled || !SETTINGS.ble.peerAddr[0]) && !bleturner::holdsHeap() && buildTickDue() && deferredDecodePage_ < 0 && !RenderLock::peek() && !gpio.wasAnyPressed() &&
       !gpio.wasAnyReleased() && !gpio.inputActive() && !gpio.hasPendingInput()) {
     RenderLock lock;
     // Re-check under the lock: render() (which also holds the RenderLock) may have finalized the
@@ -1179,7 +1213,7 @@ void EpubReaderActivity::loop() {
   }
 
   // v257：預排下一章 —— 目前這章沒有在排版（上面的 tick 沒有要跑）時才輪到它。按鍵、待補圖、render 排隊都讓。
-  if (epub && section && !section->isBuilding() && deferredDecodePage_ < 0 && !RenderLock::peek() &&
+  if (!bleturner::holdsHeap() && epub && section && !section->isBuilding() && deferredDecodePage_ < 0 && !RenderLock::peek() &&
       !gpio.wasAnyPressed() && !gpio.wasAnyReleased() && !gpio.inputActive() && !gpio.hasPendingInput()) {
     if (nextBuildTickDue()) {
       tickNextChapterPrebuild();
@@ -1514,6 +1548,22 @@ void EpubReaderActivity::jumpToPercent(int percent) {
   }
 }
 
+// Keep the current spine. A partial cache is only a watermark, so reload through
+// the existing percent-jump path, which obtains the final chapter page count.
+void EpubReaderActivity::jumpToChapterPercent(int percent) {
+  if (!epub || !section) return;
+  RenderLock lock(*this);
+  pendingSpineProgress = static_cast<float>(clampPercent(percent)) / 100.0f;
+  nextPageNumber = 0;
+  pendingPageJump.reset();
+  pendingOffsetJump.reset();
+  pendingAnchor.clear();
+  cachedVisibleTextOffset.reset();
+  cachedChapterTotalPageCount = 0;
+  pendingPercentJump = true;
+  section.reset();
+}
+
 void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action) {
   auto progressChangeResultHandler = [this](const ActivityResult& result) {
     loadCachedBookmarks();
@@ -1632,18 +1682,25 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                              });
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
-      float bookProgress = 0.0f;
-      if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
-        const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-        bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+    case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT:
+    case EpubReaderMenuActivity::MenuAction::GO_TO_CHAPTER_PERCENT: {
+      const bool chapterOnly = action == EpubReaderMenuActivity::MenuAction::GO_TO_CHAPTER_PERCENT;
+      float progress = 0.0f;
+      if (epub && section && section->estimatedTotalPages() > 0) {
+        const float chapterProgress = static_cast<float>(section->currentPage) /
+                                      static_cast<float>(section->estimatedTotalPages());
+        progress = (chapterOnly ? chapterProgress : epub->calculateProgress(currentSpineIndex, chapterProgress)) * 100.0f;
       }
-      const int initialPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+      const int initialPercent = clampPercent(static_cast<int>(progress + 0.5f));
       startActivityForResult(
-          std::make_unique<EpubReaderPercentSelectionActivity>(renderer, mappedInput, initialPercent),
-          [this](const ActivityResult& result) {
+          std::make_unique<EpubReaderPercentSelectionActivity>(
+              renderer, mappedInput, initialPercent,
+              chapterOnly ? StrId::STR_GO_TO_CHAPTER_PERCENT : StrId::STR_GO_TO_BOOK_PERCENT),
+          [this, chapterOnly](const ActivityResult& result) {
             if (!result.isCancelled) {
-              jumpToPercent(std::get<PercentResult>(result.data).percent);
+              const int percent = std::get<PercentResult>(result.data).percent;
+              if (chapterOnly) jumpToChapterPercent(percent);
+              else jumpToPercent(percent);
             }
           });
       break;
@@ -1783,11 +1840,12 @@ void EpubReaderActivity::noteBookStartNoop(const char* why) {
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (isForwardTurn) {
     // Advance within the section while there are (or may still be) more pages: either a built
-    // page ahead, or the section is still building (windowed), in which case more pages exist
+    // page ahead, an active build, or a suspended partial (BLE releases its parser).
+    // A partial watermark is not EOF, even when isBuilding() is false. More pages may exist
     // beyond the current watermark and render()'s ensure-built pump will lay them out. Only when
     // the section is fully built AND we're on its last page do we move to the next spine -- using
     // the live pageCount alone would mistake the build watermark for the end of a giant spine.
-    if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
+    if (section->currentPage < section->pageCount - 1 || section->isBuilding() || section->isPartial()) {
       section->currentPage++;
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
@@ -1819,7 +1877,49 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   requestUpdate();
 }
 
-// TODO: Failure handling
+// Keep a healthy prewarmed page, but never let its retained bitmap prevent
+// deserializing the next one. This does not unload fonts or their metrics.
+std::unique_ptr<Page> EpubReaderActivity::loadPageForRender(const int pageNo) {
+  if (!section) return nullptr;
+  auto* fcm = renderer.getFontCacheManager();
+  if (fcm && (ESP.getFreeHeap() < 24 * 1024 || ESP.getMaxAllocHeap() < 16 * 1024)) {
+    const size_t released = fcm->releaseRetainedCache();
+    if (released) {
+      DiagLog::line("PAGELOAD relief page=%d font=%u free=%u largest=%u", pageNo,
+                    static_cast<unsigned>(released), static_cast<unsigned>(ESP.getFreeHeap()),
+                    static_cast<unsigned>(ESP.getMaxAllocHeap()));
+    }
+  }
+  auto page = section->loadPage(pageNo);
+  if (!page && section->lastLoadWasLowMemory() && fcm) {
+    // A larger-than-usual page can exhaust memory above the preflight limits.
+    // Retry exactly the captured page after releasing any remaining bitmap.
+    const size_t released = fcm->releaseRetainedCache();
+    if (released) {
+      DiagLog::line("PAGELOAD retry-relief page=%d font=%u", pageNo, static_cast<unsigned>(released));
+      page = section->loadPage(pageNo);
+    }
+  }
+  return page;
+}
+
+bool EpubReaderActivity::handlePageLoadLowMemory() {
+  if (!section || !section->lastLoadWasLowMemory()) return false;
+  DiagLog::line("PAGELOAD lowmem page=%d retry=%u free=%u largest=%u cache=kept", section->currentPage,
+                static_cast<unsigned>(pageLoadRetryCount + 1), static_cast<unsigned>(ESP.getFreeHeap()),
+                static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  if (++pageLoadRetryCount <= MAX_PAGE_LOAD_RETRIES) {
+    requestUpdate();
+  } else {
+    // Wait for the next user action. Low memory is not evidence of a corrupt
+    // chapter: retain the Section, SD cache, pending page and saved progress.
+    pageLoadRetryCount = MAX_PAGE_LOAD_RETRIES;  // Stay exhausted until a page loads successfully.
+    renderer.clearScreen();
+    GUI.drawPopup(renderer, tr(STR_BUILD_LOW_MEMORY));
+  }
+  return true;
+}
+
 void EpubReaderActivity::render(RenderLock&& lock) {
   // v279（複查第一輪）：「第一頁畫完」**要在 render() 真的結束時才發佈**，而且用 RAII —— 這個函式
   //   有很多條離開路徑（空章節、低記憶體、重排中…），放在某一行後面就是賭那條路會走到。
@@ -2061,12 +2161,23 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // page and finishes the rest in loop(). The settings-change reposition (cachedChapterTotal*)
       // is NOT a full-build trigger: it's deferred to applyDeferredReposition() once the real page
       // count is known, so it never blocks the first page.
-      // Only a percent jump truly needs the whole chapter up front (percent -> page needs the final
-      // page count). Anchor jumps (TOC / chapter select / footnotes) resolve incrementally below --
+      // Percent jumps and a chosen BLE remote need the completed chapter up front.
+      // Without a remote, anchor jumps (TOC / chapter select / footnotes) resolve incrementally below --
       // the anchor is recorded as its page is laid out, so a chapter-top anchor lands on page 0
       // without indexing the whole chapter.
-      const bool needsFullBuild = pendingPercentJump;
+      const bool bleChapter = SETTINGS.ble.enabled && SETTINGS.ble.peerAddr[0];
+      const bool needsFullBuild = pendingPercentJump || bleChapter;
+      if (bleChapter) DiagLog::line("BLE-READER complete-chapter spine=%d", currentSpineIndex);
       if (needsFullBuild) {
+        // The previous page's retained glyph bitmap is unnecessary while laying
+        // out the next chapter. It can occupy 30-43 KB, including the largest
+        // contiguous heap block, even after the radio has already stopped.
+        const size_t released = renderer.getFontCacheManager()
+                                    ? renderer.getFontCacheManager()->releaseRetainedCache()
+                                    : 0;
+        DiagLog::line("CHAPTER build-relief spine=%d font=%u free=%u largest=%u", currentSpineIndex,
+                      static_cast<unsigned>(released), static_cast<unsigned>(ESP.getFreeHeap()),
+                      static_cast<unsigned>(ESP.getMaxAllocHeap()));
         GUI.drawPopup(renderer, tr(STR_INDEXING));
         // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
         // ghost-cleanup path -- otherwise the "INDEXING" text ghosts under the rendered page.
@@ -2427,19 +2538,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // 快取身分於是掛錯頁 —— 假 warm 命中、整頁走 overflow ring 而 diag 印 warm=1。
     const int pageNo = section->currentPage;
     const uint32_t tPhaseMid = millis();
-    auto p = section->loadPage(pageNo);
+    auto p = loadPageForRender(pageNo);
     const uint32_t tPhaseLoad = millis();
-    if (!p && section->lastLoadWasLowMemory()) {
-      // v152：低記憶體的 loadPage 失敗是【暫時的】—— pxc slot 在本輪 render 結束就釋放。
-      // 走原本的 clearCache/reset 會刪掉章節快取、在記憶體最緊的時刻強迫全量重建。
-      // 改成：記進 diag、跳過本輪、requestUpdate 讓下一輪重試（次數共用既有上限）。
-      DiagLog::line("PAGELOAD deferred: low memory, retry %d", pageLoadRetryCount + 1);
-      if (++pageLoadRetryCount <= MAX_PAGE_LOAD_RETRIES) {
-        requestUpdate();
-        return;
-      }
-      LOG_ERR("ERS", "Page load low-memory retries exhausted");
-      // 連續多輪都瀕死：落回原本的重建路徑（下面），至少讓使用者不卡白頁。
+    if (!p && handlePageLoadLowMemory()) {
+      showPendingSyncSaveError();
+      return;
     }
     if (!p) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
@@ -2602,6 +2705,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
 // ⇒ 下一次 render 走冷路徑（＝無預取行為）。
 void EpubReaderActivity::prefetchNextPage(const int fontId, const int marginTop, const int marginLeft,
                                           const int basePage, const bool abortOnInput) {
+  if (bleturner::holdsHeap()) return;
   // 先歸零：pf= 的語意是「即將顯示的這一頁，預取花了多久」。任何一道閘門擋下來都算
   // 「沒有預取」，留著上一次的數字會讓 warm=0 旁邊掛著漂亮的 pf=280。
   // 直排：繪製端的旗標必須與這一頁【被排版時】的軸向一致，否則轉置編碼會被當成
@@ -3941,7 +4045,7 @@ void EpubReaderActivity::renderStatusBar() const {
   }
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section->isBuilding());
+                    section->isBuilding() || section->isPartial());
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

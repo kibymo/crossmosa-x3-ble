@@ -1,6 +1,8 @@
 #include "BaseTheme.h"
 
 #include <GfxRenderer.h>
+#include <BlePageTurner.h>
+#include "components/icons/bluetooth.h"
 #include <HalClock.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -9,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "I18n.h"
@@ -821,9 +824,9 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   int leftClusterWidth = 0;
   int rightClusterWidth = 0;
 
-  if (sb.showBookProgressPercent || sb.showChapterPageCount) {
+  if (sb.showBookProgressPercent || sb.showChapterPageCount || sb.showChapterProgressPercent) {
     // Right aligned text for progress counter
-    char progressStr[32];
+    char progressStr[128];
 
     // Prefix the page count with "~" while a still-building spine only yields an estimated total.
     const char* estimatePrefix = pageCountEstimated ? "~" : "";
@@ -839,6 +842,15 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     } else {
       // 百分比與頁數都不顯示（使用者關掉百分比 + txt 抑制頁數）：留空而不是印出誤導的 0/0。
       progressStr[0] = '\0';
+    }
+
+    // TXT has no chapter segmentation. Reuse the reader's estimated chapter total
+    // without forcing pagination or using the partial-cache watermark.
+    if (sb.showChapterProgressPercent && !hidePageCount && pageCount > 0) {
+      const float chapterPercent = std::clamp(100.0f * currentPage / pageCount, 0.0f, 100.0f);
+      const size_t used = std::strlen(progressStr);
+      snprintf(progressStr + used, sizeof(progressStr) - used, "%s%s%.0f%%",
+               used ? "  " : "", estimatePrefix, chapterPercent);
     }
 
     int progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);
@@ -883,6 +895,20 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
 
     leftClusterWidth += batteryWidth;
+  }
+
+  // CrossMux-style connection marker shares the battery/title lane. Paint only with
+  // the normal page refresh; never start the radio or allocate a bitmap here.
+  if (showStatusBarTextLane && bleturner::status().connected) {
+    const int gap = leftClusterWidth > 0 ? 6 : 0;
+    const int x = leftClusterX + leftClusterWidth + gap;
+    for (int row = 0; row < 16; ++row) {
+      for (int col = 0; col < 16; ++col) {
+        if ((BluetoothStatusIcon[row * 2 + col / 8] & (1u << (7 - col % 8))) == 0)
+          renderer.drawPixel(x + col, textY + 3 + row, true);
+      }
+    }
+    leftClusterWidth += 16 + gap;
   }
 
   // Draw Clock (X3 only — DS3231 RTC)

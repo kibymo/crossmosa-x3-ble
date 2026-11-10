@@ -36,7 +36,7 @@ class HalPowerManager {
   void begin();
 
   // Control CPU frequency for power saving
-  void setPowerSaving(bool enabled);
+  void setPowerSaving(bool enabled, int minimumFrequency = 0);
 
   // Setup wake up GPIO and enter deep sleep
   // Should be called inside main loop() to handle the currentLockMode

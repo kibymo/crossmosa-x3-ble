@@ -20,6 +20,13 @@
 #include <Utf8.h>
 #include <ZhuyinActive.h>
 #include <esp_heap_caps.h>
+#include <new>
+
+// This translation unit alone unwinds its scratch vectors on allocation failure.
+// Do not silently compile the recovery boundary out in another firmware target.
+#ifndef __EXCEPTIONS
+#error "ParsedTextVertical.cpp requires local exception recovery"
+#endif
 
 #include "ParsedText.h"
 #include "VerticalColumns.h"
@@ -232,7 +239,7 @@ TokenPlan planToken(const GfxRenderer& renderer, const int fontId, const std::st
 
 void ParsedText::layoutAndExtractColumns(
     const GfxRenderer& renderer, const int fontId, const uint16_t columnLength,
-    const std::function<void(std::shared_ptr<TextBlock>, uint32_t, int)>& processColumn, const bool includeLastColumn) {
+    const std::function<void(std::shared_ptr<TextBlock>, uint32_t, int)>& processColumn, const bool includeLastColumn) try {
   if (words.empty()) return;
   // v252 BUILDPROF：整段排版（RAII：所有出口都計，含 consumeAllAndBail）。
   struct LayProf {
@@ -396,8 +403,10 @@ void ParsedText::layoutAndExtractColumns(
   //  ⭐ 為什麼分批是安全的：每一批都**只產出完整的欄**（includeLast=false），
   //     最後那個沒排完的欄留著不消耗 —— 這正是橫排 `layoutAndExtractLines` 的既有契約，
   //     所以欄不會在批次邊界被切斷，也不會多出一個欄界。
-  constexpr size_t CHUNK_WORDS = 800;           // 粗篩
-  constexpr size_t MAX_UNITS_PER_CHUNK = 1000;  // 真正的上限：約 26 KB
+  // Keep the working set small even when the parser has queued a long block.
+  // A word may expand to several units, so the unit limit is separate.
+  constexpr size_t CHUNK_WORDS = 192;
+  constexpr size_t MAX_UNITS_PER_CHUNK = 256;
   bool firstChunk = true;
   while (!words.empty()) {
     const bool lastChunk = words.size() <= CHUNK_WORDS;
@@ -785,6 +794,14 @@ void ParsedText::layoutAndExtractColumns(
     //     focusSuffixX[i]  → 跨軸（欄內）位移（focusBoundary 全 0，所以 focus 邏輯不會跑）
     //     styles[i] bit 7  → 這個 token 要旋轉（Style 用到 bit 0-6，bit 7 是空的）
     for (size_t c = 0; c < columnCount; ++c) {
+      // Like horizontal extractLine: stop before exhausting the heap outright.
+      // The local exception boundary handles a larger allocation failing even
+      // while small blocks remain; it is not a substitute for this hard floor.
+      if (heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT) < 4 * 1024) {
+        oom_ = true;
+        consumeAllAndBail("column-floor");
+        return;
+      }
       const size_t begin = breaks.starts[c];
       const size_t end = (c + 1 < breaks.starts.size()) ? breaks.starts[c + 1] : units.size();
       if (end <= begin) continue;
@@ -794,8 +811,20 @@ void ParsedText::layoutAndExtractColumns(
       std::vector<EpdFontFamily::Style> colStyles;
       std::vector<uint8_t> colBoundary;
       std::vector<uint16_t> colCross;
-      // ⚠️ 逐字元拆開之後，實際筆數 ≥ unit 數 —— colBoundary 必須在迴圈【之後】才配。
-      const size_t n = end - begin;
+      // Reserve the actual emitted cells, not the number of units. A glued CJK
+      // token is one unit but produces multiple strings. Avoid growth while the
+      // old string array and the rest of the layout scratch are still resident.
+      size_t n = 0;
+      for (size_t i = begin; i < end; ++i) {
+        if (units[i].kind != vtext::UnitKind::Cell) {
+          ++n;
+          continue;
+        }
+        const auto& word = words[unitSrcWord[i]];
+        const char* p = word.c_str() + unitByteBegin[i];
+        const char* const stop = p + unitByteLen[i];
+        while (p < stop && vtext::nextCodepoint(p, stop)) ++n;
+      }
       colWords.reserve(n);
       colAlong.reserve(n);
       colStyles.reserve(n);
@@ -991,8 +1020,12 @@ void ParsedText::layoutAndExtractColumns(
                                                std::vector<std::string>{}, zb);
       zhuyinNoteBuilt(zb, zyOomBefore);
       if (!block->valid()) {
-        LOG_ERR("PTV", "Dropping column: TextBlock arena allocation failed");
-        continue;
+        // Never commit a chapter with a silently missing column. The parser
+        // observes the sticky flag and Section keeps only its safe partial.
+        oom_ = true;
+        LOG_ERR("PTV", "Aborting layout: TextBlock arena allocation failed");
+        consumeAllAndBail("arena-oom");
+        return;
       }
       // 這一欄用掉幾個 token：unit 是 token 的細分，只數「某個 token 的第一個 unit」。
       int tokensInColumn = 0;
@@ -1032,4 +1065,21 @@ void ParsedText::layoutAndExtractColumns(
     firstChunk = false;
     if (lastChunk && !unitsTruncated) break;
   }
+} catch (const std::bad_alloc&) {
+  // All local scratch has unwound before this handler. Stop this build rather
+  // than retrying the same unconsumed paragraph or committing missing text.
+  // No new strings/vectors are constructed here.
+  oom_ = true;
+  const size_t n = words.size();
+  words.clear();
+  wordStyles.clear();
+  wordContinues.clear();
+  wordNoSpaceBefore.clear();
+  wordIsFocusSuffix.clear();
+  eraseVisibleOffsetPrefix(n);
+  rubyTexts.clear();
+  zhuyinAbandon();
+  ParsedText::vertDiag("VERTOOM allocation-failed free=%u largest=%u",
+                       static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DEFAULT)),
+                       static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)));
 }

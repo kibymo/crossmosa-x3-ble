@@ -5,6 +5,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Txt.h>
@@ -21,6 +22,7 @@
 #include "images/LogoBear240.h"
 #include "util/BenchFlags.h"
 #include "util/DiagLog.h"
+#include "util/NvsStore.h"
 
 // ─── v320：桌布平面快取 ──────────────────────────────────────────────────────
 // 實機（diag319）：按電源鍵休眠 → 真的睡著，中位 5.9 秒。其中約 3.8 秒是把【同一張 BMP 解碼三趟】
@@ -437,6 +439,28 @@ bool wallCandidateName(HalFile& dirFile, char* name, const size_t nameLen) {
 }
 }  // namespace
 
+namespace {
+// Keep just the clock preferences in internal flash so a no-card boot can use
+// the same local time. Write only when they change, never the full settings.
+void sleepClockPreferences() {
+  struct ClockPrefs { uint8_t version, offset, format; } saved{};
+  size_t size = sizeof(saved);
+  const bool known = NvsStore::getBlob("sleepClock", &saved, &size) && size == sizeof(saved) &&
+                     saved.version == 1 && saved.offset <= 104 && saved.format <= 1;
+  if (!Storage.ready()) {
+    if (known) {
+      SETTINGS.clockUtcOffsetQ = saved.offset;
+      SETTINGS.clockFormat = saved.format;
+    }
+    return;
+  }
+  if (!known || saved.offset != SETTINGS.clockUtcOffsetQ || saved.format != SETTINGS.clockFormat) {
+    const ClockPrefs current{1, SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat};
+    NvsStore::putBlob("sleepClock", &current, sizeof(current));
+  }
+}
+}  // namespace
+
 bool SleepActivity::skipEnteringPopup = false;
 
 void SleepActivity::onEnter() {
@@ -455,6 +479,14 @@ void SleepActivity::onEnter() {
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   } else if (!popupDone) {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
+  }
+
+  sleepClockPreferences();
+
+  // ready() only records mounting; read the card now to detect removal after boot.
+  uint8_t cardId[16];
+  if (!Storage.ready() || !Storage.readCardId(cardId)) {
+    return renderClockSleepScreen();
   }
 
   switch (SETTINGS.sleepScreen) {
@@ -576,13 +608,25 @@ void SleepActivity::renderCustomSleepScreen() const {
   }
   if (dir) dir.close();
 
-  renderDefaultSleepScreen();
+  renderClockSleepScreen();
 }
 
 // Sleep screens paint with a single HALF refresh (stock parity): the OEM X4
 // firmware's only clean refresh in normal operation is the single-pass 0xD7
 // sequence, used once for the sleep image. It never runs the multi-flash GC
 // waveform (0xF7) that FULL_REFRESH selects (#2471's blinking complaint).
+void SleepActivity::renderClockSleepScreen() const {
+  // Built-in digits and RTC only: no SD fonts, wallpaper or cache are needed.
+  char timeText[16];
+  if (!halClock.formatTime(timeText, sizeof(timeText), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+    snprintf(timeText, sizeof(timeText), "--:--");
+  }
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() / 2, timeText);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
 void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();

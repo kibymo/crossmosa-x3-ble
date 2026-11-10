@@ -40,6 +40,7 @@ void snapFontPointSizeTo(const uint8_t availablePointSize) {
   SETTINGS.saveToFile();
 }
 
+#if !defined(CROSSMOSA_ENGLISH_UI) && !defined(CROSSMOSA_LOW_RAM_UI)
 // Built-in UI fonts and their physical point sizes (at 150 DPI, matching the
 // SD-font converter). Each is paired with a same-size SD fallback so CJK UI
 // text matches the surrounding Latin. See SdCardFontSystem::setupUiFallbacks.
@@ -52,6 +53,8 @@ constexpr UiFontSize kUiFontSizes[] = {
     {UI_10_FONT_ID, 10},
     {UI_12_FONT_ID, 12},
 };
+
+#endif
 
 }  // namespace
 
@@ -287,6 +290,11 @@ bool SdCardFontSystem::reloadReaderFontAfterRelief(GfxRenderer& renderer) {
 }
 
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
+#if defined(CROSSMOSA_ENGLISH_UI) || defined(CROSSMOSA_LOW_RAM_UI)
+  // BLE low-RAM UI: use built-in UI glyphs without three extra SD font sizes.
+  // The reader family remains loaded; CJK filenames in the UI may lack glyphs.
+  (void)renderer;
+#else
   const std::string& familyName = manager_.currentFamilyName();
   if (familyName.empty()) return;  // no SD family loaded — nothing to fall back to
 
@@ -320,6 +328,7 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
       LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, familyName.c_str());
     }
   }
+#endif
 }
 
 int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*pointSize*/) const {

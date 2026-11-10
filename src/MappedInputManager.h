@@ -35,6 +35,12 @@ class MappedInputManager {
   MappedInputManager(HalGPIO& gpio, const GfxRenderer& renderer) : gpio(gpio), renderer(renderer) {}
 
   void update() const { gpio.update(); }
+  void clearRemote() { remoteButton = -1; }
+  bool injectRemote(Button b) {
+    if (remoteButton >= 0) return false;
+    remoteButton = static_cast<int>(b);
+    return true;
+  }
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
   bool isPressed(Button button) const;
@@ -93,6 +99,7 @@ class MappedInputManager {
   static bool bookTurnsRightToLeft();
 
  private:
+  int remoteButton = -1;
   HalGPIO& gpio;
   // Logical-to-physical button mapping depends on what the user is actually looking at: when the
   // screen is rendered rotated, the directional buttons must flip to match. The renderer is the only

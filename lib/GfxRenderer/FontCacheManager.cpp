@@ -62,6 +62,16 @@ size_t FontCacheManager::releaseRetainedCache() {
   return bytes;
 }
 
+size_t FontCacheManager::releaseForPairing() {
+  const size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  releaseRetainedCache();
+  for (auto& [id, font] : sdCardFonts_) {
+    if (font) font->clearPersistentCache();
+  }
+  const size_t after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  return after > before ? after - before : 0;
+}
+
 size_t FontCacheManager::retainedMiniBitmapCapacity(const int fontId) const {
   const auto it = sdCardFonts_.find(fontId);
   if (it == sdCardFonts_.end() || !it->second) return 0;

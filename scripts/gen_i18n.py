@@ -113,6 +113,7 @@ def parse_yaml_file(filepath: str) -> Dict[str, str]:
 def load_translations(
     translations_dir: str,
     verbose: bool = False,
+    english_only: bool = False,
 ) -> Tuple[List[str], List[str], List[str], Dict[str, List[str]], List[Set[str]]]:
     """
     Read every YAML file in *translations_dir* and return:
@@ -145,6 +146,9 @@ def load_translations(
 
     if english_file is None:
         raise ValueError("No YAML file with _language_code: EN found")
+
+    if english_only:
+        parsed = {english_file: parsed[english_file]}
 
     duplicate_orders: Dict[str, List[str]] = {}
     order_to_files: Dict[str, List[str]] = {}
@@ -829,6 +833,7 @@ def main(
     src_dirs: Optional[List[str]] = None,
     strip_unused: bool = False,
     verbose: bool = False,
+    english_only: bool = False,
 ) -> None:
     # Default paths (relative to project root)
     default_translations_dir = "lib/I18n/translations"
@@ -862,7 +867,7 @@ def main(
 
     try:
         languages, language_names, string_keys, translations, inherited_sets = (
-            load_translations(translations_dir, verbose)
+            load_translations(translations_dir, verbose, english_only)
         )
 
         # --- Unused-string detection ---
@@ -992,6 +997,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Print per-key INFO/WARNING messages and file generation details",
     )
+    parser.add_argument("--english-only", action="store_true", help="Build only the English UI translation")
     args = parser.parse_args()
     main(
         args.translations_dir,
@@ -999,10 +1005,11 @@ if __name__ == "__main__":
         args.src_dirs,
         args.strip_unused,
         args.verbose,
+        args.english_only,
     )
 else:
     try:
         Import("env")
-        main(strip_unused=True)
+        main(strip_unused=True, english_only=env.GetProjectOption("custom_english_ui", "no") == "yes")
     except NameError:
         pass

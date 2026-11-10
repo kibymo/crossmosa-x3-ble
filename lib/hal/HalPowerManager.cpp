@@ -8,6 +8,7 @@
 #include <soc/soc_caps.h>
 
 #include <cassert>
+#include <algorithm>
 
 #include "HalGPIO.h"
 
@@ -22,7 +23,7 @@ void HalPowerManager::begin() {
   assert(modeMutex != nullptr);
 }
 
-void HalPowerManager::setPowerSaving(bool enabled) {
+void HalPowerManager::setPowerSaving(bool enabled, int minimumFrequency) {
   if (normalFreq <= 0) {
     return;  // invalid state
   }
@@ -37,10 +38,11 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;
 
-  if (mode == None && enabled && !isLowPower) {
+  const int lowFrequency = std::min(normalFreq, std::max(LOW_POWER_FREQ, minimumFrequency));
+  if (mode == None && enabled && (!isLowPower || getCpuFrequencyMhz() != lowFrequency)) {
     LOG_DBG("PWR", "Going to low-power mode");
-    if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+    if (!setCpuFrequencyMhz(lowFrequency)) {
+      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", lowFrequency);
       return;
     }
     isLowPower = true;

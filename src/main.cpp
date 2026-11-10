@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <BlePageTurner.h>
+#include <atomic>
 #include <BoardConfig.h>
 #include <DataDir.h>
 #include <Epub.h>
@@ -107,14 +109,29 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont);
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
+#ifdef CROSSMOSA_ENGLISH_UI
+EpdFont ui10RegularFont(&en_ui_10_regular);
+// BLE variant: share the small UI face to keep the existing flash partition.
+EpdFont ui10BoldFont(&en_ui_10_regular);
+EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
+
+// CrossMosa：物件名 ui12* 保留（UI_12_FONT_ID 與所有呼叫端不動），資料指向 14px。
+EpdFont ui12RegularFont(&en_ui_14_regular);
+EpdFont ui12BoldFont(&en_ui_14_bold);
+EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+
+#else
 EpdFont ui10RegularFont(&ubuntu_10_regular);
-EpdFont ui10BoldFont(&ubuntu_10_bold);
+// BLE variant: share the small UI face to keep the existing flash partition.
+EpdFont ui10BoldFont(&ubuntu_10_regular);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 
 // CrossMosa：物件名 ui12* 保留（UI_12_FONT_ID 與所有呼叫端不動），資料指向 14px。
 EpdFont ui12RegularFont(&ubuntu_14_regular);
 EpdFont ui12BoldFont(&ubuntu_14_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+
+#endif
 
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
@@ -1064,7 +1081,73 @@ static bool lightSleepCycle(bool wakeFrameDeferred,
   return true;
 }
 
+extern "C" void crossmosaBleDiagnostic(const char* stage) {
+  DiagLog::line("BLE-STAGE %s", stage);
+  DiagLog::mem("ble-stage");
+}
+
+extern "C" uint32_t crossmosaBleBitmapBudget() {
+  if (!bleturner::status().running) return 0;
+  const uint32_t free = ESP.getFreeHeap();
+  return free > 20 * 1024 ? std::min<uint32_t>(8192, free - 20 * 1024) : 1;
+}
+
+namespace pageturner {
+std::atomic<bool> holdsCpu{false};
+bleturner::Heap heap() { return {ESP.getFreeHeap(), ESP.getMaxAllocHeap()}; }
+bool releaseCaches() {
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) return false;
+  // No render or incremental builder can be using these tables while this lock is held.
+  // The next page rebuilds them; cached text uses a bounded bitmap while BLE stays up.
+  const size_t released = fontCacheManager.releaseForPairing();
+  DiagLog::line("BLE-READER font-cache-release bytes=%u", static_cast<unsigned>(released));
+  return true;
+}
+
+bool deliver(bleturner::Action action) {
+  if (!activityManager.currentIsReaderActivity() || !activityManager.blePageShown.load()) return false;
+  using B = MappedInputManager::Button;
+  switch (action) {
+    case bleturner::Action::NextPage: return mappedInputManager.injectRemote(B::PageForward);
+    case bleturner::Action::PrevPage: return mappedInputManager.injectRemote(B::PageBack);
+    case bleturner::Action::Confirm: return mappedInputManager.injectRemote(B::Confirm);
+    case bleturner::Action::Back: return mappedInputManager.injectRemote(B::Back);
+    default: return false;
+  }
+}
+bool yieldForRadio() { return !activityManager.isRenderPending(); }
+bool fileTransferActive() { return WiFi.getMode() != WIFI_MODE_NULL; }
+void restartIntoBook() {
+  // Called on the main loop only after the runtime has excluded radio work,
+  // sleep, storage and Wi-Fi. Serialize with rendering before saving position.
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock() || deepSleepInProgress || !activityManager.currentIsReaderActivity()) {
+    LOG_ERR("BLE", "Heap recovery skipped: reader is busy; restart manually");
+    return;
+  }
+  if (activityManager.flushProgress() != 0) {
+    LOG_ERR("BLE", "Heap recovery cancelled: progress could not be saved");
+    return;
+  }
+  if (!APP_STATE.saveDurable()) {
+    LOG_ERR("BLE", "Heap recovery cancelled: reader state could not be saved");
+    return;
+  }
+  DiagLog::line("BLE-RECOVERY progress-saved restart-to-reader");
+  silentRestartToReader();
+}
+void holdFullSpeed(bool hold) { holdsCpu.store(hold); if (hold) powerManager.setPowerSaving(false); }
+void log(bool, const char* fmt, va_list args) {
+  char line[160]; vsnprintf(line, sizeof(line), fmt, args); LOG_INF("BLE", "%s", line);
+  DiagLog::line("BLE %s", line);
+}
+const bleturner::Host host{heap, releaseCaches, deliver, yieldForRadio, fileTransferActive,
+                          restartIntoBook, holdFullSpeed, log, nullptr};
+}
+
 void enterDeepSleep(bool fromTimeout = false) {
+  if (!bleturner::beforeSleep(3000)) return;
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   // v185 證人：分清「睡著醒來回主畫面」與「重置回主畫面」——兩者在 log 上原本都只有一行 BOOT。
   const NvsStore::Stats nvsIn = NvsStore::takeStats();  // v331：上次醒來（或開機）之後的 NVS 影子寫入 —— 翻頁那些
@@ -1088,7 +1171,11 @@ void enterDeepSleep(bool fromTimeout = false) {
   const unsigned socNow = powerManager.getBatteryPercentage();
   const bool onUsb = gpio.isUsbConnected();
   const bool batteryOkForLightSleep = socNow >= LIGHT_SLEEP_MIN_SOC || onUsb;
-  const bool willTryLightSleep = !fromTimeout && activityManager.supportsLightSleep() &&
+  // A card already absent at sleep entry cannot support the resume snapshot.
+  // Use deep sleep so its timed light-sleep exit cannot reboot into a card error.
+  uint8_t sleepCardId[16];
+  const bool sleepCardAvailable = Storage.ready() && Storage.readCardId(sleepCardId);
+  const bool willTryLightSleep = !fromTimeout && activityManager.supportsLightSleep() && sleepCardAvailable &&
                                  WiFi.getMode() == WIFI_MODE_NULL && batteryOkForLightSleep && lightSleepEnabled();
   if (!batteryOkForLightSleep && !fromTimeout && activityManager.supportsLightSleep() && lightSleepEnabled()) {
     DiagLog::line("LSLEEP skip why=lowbat soc=%u usb=%d", socNow, onUsb ? 1 : 0);
@@ -1502,6 +1589,7 @@ void setup() {
   g_wakeT[0] = millis();
 
   SETTINGS.loadFromFile();
+  bleturner::begin(pageturner::host, SETTINGS.ble);
   {
     // v343（帳本 B12）：時鐘證人 —— 開機一行（晶片在不在、讀不讀得到、年份、可不可信、設定的「已校時」）。
     //   2026-09-26 狀態列停在 08:00 那次，log 裡沒有任何時鐘紀錄才查不到。多一次 I2C（約 1 ms）。
@@ -1882,7 +1970,23 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+  mappedInputManager.clearRemote();
   gpio.update();
+  auto bleScene = activityManager.bleScene();
+  bleScene.wifiOn = WiFi.getMode() != WIFI_MODE_NULL;
+  bleScene.localKey = gpio.wasAnyReleased();
+  const bool remoteActed = bleturner::tick(bleScene);
+  static uint32_t lastBleReaderDiag = 0;
+  if (SETTINGS.ble.enabled && bleScene.where == bleturner::Where::Reader &&
+      millis() - lastBleReaderDiag >= 5000) {
+    lastBleReaderDiag = millis();
+    const auto st = bleturner::status();
+    DiagLog::line("BLE-READER shown=%d indexing=%d chosen=%d pending=%d running=%d starting=%d connected=%d stopping=%d deferred=%d why=%u free=%u largest=%u",
+                  bleScene.pageShown, bleScene.bookIndexing, SETTINGS.ble.peerAddr[0] != 0,
+                  activityManager.isRenderPending(), st.running, st.starting, st.connected, st.stopping,
+                  st.readerDeferred, static_cast<unsigned>(bleturner::why()),
+                  static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  }
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
@@ -1912,7 +2016,7 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   // v304：從 loop() 的 static 提到檔案範圍 —— 淺睡眠續讀時必須重置它（見 g_lastActivityTime）。
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
+  if (remoteActed || gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
     g_lastActivityTime = millis();       // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
@@ -1974,6 +2078,7 @@ void loop() {
   if (sleepTimeoutMs > 0 && millis() - g_lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
     enterDeepSleep(true);
+    bleturner::requestConnect();  // Light sleep returns here after wake.
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -2027,6 +2132,7 @@ void loop() {
       return;
     }
     enterDeepSleep();
+    bleturner::requestConnect();  // Deep sleep never returns; light sleep does.
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
@@ -2066,12 +2172,17 @@ void loop() {
     powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
     yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
-    if (millis() - g_lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
+    const auto blePower = bleturner::status();
+    const bool stableBle = blePower.connected && !blePower.starting && !blePower.stopping &&
+                           !blePower.scanning && !blePower.connecting;
+    if ((!pageturner::holdsCpu.load() || stableBle) &&
+        millis() - g_lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
       // If we've been inactive for a while, increase the delay to save power
-      powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
+      powerManager.setPowerSaving(true, bleturner::holdsHeap() ? 80 : 0);  // BLE needs an 80 MHz floor
       delay(50);
     } else {
-      // Short delay to prevent tight loop while still being responsive
+      // Scanning, reconnecting and fresh activity restore normal speed.
+      powerManager.setPowerSaving(false);
       delay(10);
     }
   }

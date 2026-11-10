@@ -351,20 +351,22 @@ bool MappedInputManager::wasHomeGesture() const {
 }
 
 bool MappedInputManager::wasPressed(const Button button) const {
+  if (remoteButton == static_cast<int>(button)) return true;
   if (button == Button::Back && wasBackGesture()) return true;
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
+  if (remoteButton == static_cast<int>(button)) return true;
   if (button == Button::Back && wasBackGesture()) return true;
   return mapButton(button, &HalGPIO::wasReleased);
 }
 
 bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
 
-bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed(); }
+bool MappedInputManager::wasAnyPressed() const { return remoteButton >= 0 || gpio.wasAnyPressed(); }
 
-bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); }
+bool MappedInputManager::wasAnyReleased() const { return remoteButton >= 0 || gpio.wasAnyReleased(); }
 
 unsigned long MappedInputManager::getHeldTime() const {
   if (!gpio.wasAnyPressed() && !gpio.wasAnyReleased() && touchHeldOverrideValid &&
@@ -372,6 +374,7 @@ unsigned long MappedInputManager::getHeldTime() const {
     return touchHeldOverrideMs;
   }
   touchHeldOverrideValid = false;
+  if (remoteButton >= 0) return 0;
   return gpio.getHeldTime();
 }
 

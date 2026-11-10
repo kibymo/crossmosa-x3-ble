@@ -2,8 +2,10 @@
 
 #include <BoardConfig.h>
 #include <esp_rom_sys.h>
+#include <esp_system.h>
 
 #include <string>
+#include <atomic>
 
 #define MAX_ENTRY_LEN 256
 #define MAX_LOG_LINES 16
@@ -19,7 +21,19 @@ RTC_NOINIT_ATTR size_t logHead = 0;
 RTC_NOINIT_ATTR uint32_t rtcLogMagic;
 static constexpr uint32_t LOG_RTC_MAGIC = 0xDEADBEEF;
 
+namespace {
+std::atomic<bool> reportSaved{false};
+bool preservePreviousLogs() {
+  const auto reason = esp_reset_reason();
+  return !reportSaved.load(std::memory_order_acquire) && (reason == ESP_RST_PANIC || reason == ESP_RST_CPU_LOCKUP ||
+         reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT);
+}
+}
+void resumeLogRingBuffer() { reportSaved.store(true, std::memory_order_release); }
+
 void addToLogRingBuffer(const char* message) {
+  // Boot diagnostics must not overwrite the evidence before checkPanic saves it.
+  if (preservePreviousLogs()) return;
   // Add the message to the ring buffer, overwriting old messages if necessary.
   // If the magic is wrong or logHead is out of range (RTC_NOINIT_ATTR garbage
   // on cold boot), clear the entire buffer so subsequent reads are safe.

@@ -63,6 +63,8 @@ class EpubReaderActivity final : public Activity {
   bool pendingSyncSaveError = false;
   // Consecutive page-load failures. Each failure drops the section and rebuilds on the next render,
   // which recovers a transiently corrupt cache; capped so a persistently bad page can't spin forever.
+  std::unique_ptr<Page> loadPageForRender(int pageNo);
+  bool handlePageLoadLowMemory();
   uint8_t pageLoadRetryCount = 0;
   static constexpr uint8_t MAX_PAGE_LOAD_RETRIES = 3;
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
@@ -379,6 +381,7 @@ class EpubReaderActivity final : public Activity {
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
+  void jumpToChapterPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   // Opens the reader menu for the current position (short-press Confirm)
   void openReaderMenu();
@@ -448,8 +451,14 @@ class EpubReaderActivity final : public Activity {
   // speed would only burn battery; the paused gate still retries every loop pass).
   // v189：看 buildTickDue() 不看 isBuilding()——閒置在 BUILD_AHEAD_CAP 的建置沒有工作要做。
   // （舊視窗設計下這裡整章為真：4 次翻頁 3 次沒有 tick，CPU 卻整章全速。）
-  bool skipLoopDelay() override { return (buildTickDue() || nextBuildTickDue()) && !buildHeapPaused; }
+  bool skipLoopDelay() override { return !bleturner::holdsHeap() && (buildTickDue() || nextBuildTickDue()) && !buildHeapPaused; }
   bool isReaderActivity() const override { return true; }
+  void prepareForBle() override;
+  bool canRenderWithBle() override;
+  bool bleReady() const override {
+    return section && !section->isBuilding() && !nextSection_ && section->currentPage >= 0 &&
+           section->currentPage < static_cast<int>(section->pageCount);
+  }
   int flushProgress() override;         // v329：休眠前把欠的進度寫掉；註腳中改存來源位置（同 onExit）。v332：只補 NVS
   int flushProgressDurable() override;  // v332：淺睡眠入口桌布之後的 SD 檢查點（沒人等）
   bool handleForcedRefresh() override {

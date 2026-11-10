@@ -1,4 +1,6 @@
 #include "ActivityManager.h"
+#include "CrossPointSettings.h"
+#include <BlePageTurner.h>
 
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -62,7 +64,26 @@ void ActivityManager::renderTaskLoop() {
       const FontDecompressor::Stats s0 = fd ? fd->getStats() : FontDecompressor::Stats{};
       const std::string who = currentActivity->name;
 
+      const bool bleReader = currentActivity->isReaderActivity();
+      if (bleReader) {
+        blePageShown.store(false);
+        bleturner::settleStart();
+        bool keepRadio = false;
+        if (bleturner::status().running && !bleturner::status().stopping) {
+          fontCacheManager.releaseForPairing();
+          keepRadio = ESP.getFreeHeap() >= 24 * 1024 && currentActivity->canRenderWithBle();
+        }
+        if (!keepRadio) bleturner::beforeChapterBuild();
+        else DiagLog::line("BLE-READER keep-radio cached-text free=%u", (unsigned)ESP.getFreeHeap());
+        const auto radio = bleturner::status();
+        if (radio.starting || (!keepRadio && radio.running) || radio.stopping) {
+          // A timed-out stop still owns the heap; retry instead of rendering into it.
+          requestUpdate();
+          continue;
+        }
+      }
       currentActivity->render(std::move(lock));
+      if (bleReader) { bleturner::afterPaint(); blePageShown.store(true); }
 
       const uint32_t us = micros() - t0;
       if (fd) {
@@ -107,6 +128,9 @@ void ActivityManager::loop() {
   }
 
   while (pendingAction != PendingAction::None) {
+    if (!bleturner::beforeScreenChange()) return;
+    blePageShown.store(false);
+    bleVisit.fetch_add(1);
     if (pendingAction == PendingAction::Pop) {
       RenderLock lock;
 
@@ -386,6 +410,10 @@ void ActivityManager::requestUpdateAndWait() {
 
 // RenderLock
 
+RenderLock::RenderLock(Mode) {
+  isLocked = xSemaphoreTake(activityManager.renderingMutex, 0) == pdTRUE;
+}
+
 RenderLock::RenderLock() {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
   isLocked = true;
@@ -422,3 +450,22 @@ bool RenderLock::heldByCurrentTask() {
 }
 
 bool RenderLock::peek() { return xQueuePeek(activityManager.renderingMutex, NULL, 0) != pdTRUE; };
+
+bleturner::Scene ActivityManager::bleScene() const {
+  bleturner::Scene scene{};
+  scene.visit = bleVisit.load();
+  // Called only by the main loop; the render task never changes the activity pointer.
+  if (!currentActivity || pendingAction != PendingAction::None) return scene;
+  scene.where = currentActivity->name == "BleSettings" ? bleturner::Where::PairingScreen
+              : currentActivity->isReaderActivity() ? bleturner::Where::Reader : bleturner::Where::Elsewhere;
+  scene.pageShown = blePageShown.load();
+  {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock() && scene.where == bleturner::Where::Reader && scene.pageShown &&
+        !requestedUpdate.load() && SETTINGS.ble.enabled && SETTINGS.ble.peerAddr[0]) {
+      currentActivity->prepareForBle();
+    }
+    scene.bookIndexing = !lock.ownsLock() || !currentActivity->bleReady();
+  }
+  return scene;
+}

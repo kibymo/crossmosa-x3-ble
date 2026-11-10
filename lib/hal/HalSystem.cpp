@@ -15,6 +15,8 @@
 RTC_NOINIT_ATTR char panicMessage[256];
 RTC_NOINIT_ATTR HalSystem::StackFrame panicStack[MAX_PANIC_STACK_DEPTH];
 
+RTC_NOINIT_ATTR uint32_t panicPc, panicCause, panicValue, panicRegsValid;
+
 extern "C" {
 
 void __real_panic_abort(const char* message);
@@ -48,7 +50,12 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
   }
 
   // Copied from components/esp_system/port/arch/riscv/panic_arch.c
-  uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
+  const auto* saved = (const RvExcFrame*)frame;
+  panicPc = saved->mepc;
+  panicCause = saved->mcause;
+  panicValue = saved->mtval;
+  panicRegsValid = 0x43505231;
+  uint32_t sp = (uint32_t)saved->sp;
   const int per_line = 8;
   int depth = 0;
   for (int x = 0; x < 1024; x += per_line * sizeof(uint32_t)) {
@@ -100,14 +107,17 @@ void checkPanic() {
     if (file) {
       file.write(panicInfo.c_str(), panicInfo.size());
       file.close();
+      resumeLogRingBuffer();
       LOG_INF("SYS", "Dumped panic info to SD card");
     } else {
+      resumeLogRingBuffer();
       LOG_ERR("SYS", "Failed to open crash_report.txt for writing");
     }
   }
 }
 
 void clearPanic() {
+  panicRegsValid = 0;
   panicMessage[0] = '\0';
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
@@ -123,6 +133,12 @@ std::string getPanicInfo(bool full) {
 
     info += "CrossPoint version: " CROSSPOINT_VERSION;
     info += "\n\nPanic reason: " + std::string(panicMessage);
+    if (panicRegsValid == 0x43505231) {
+      char regs[128];
+      snprintf(regs, sizeof(regs), "\nException PC: 0x%08lx cause: 0x%08lx value: 0x%08lx",
+               (unsigned long)panicPc, (unsigned long)panicCause, (unsigned long)panicValue);
+      info += regs;
+    }
     // v178：panic reason 為空＝重置不是經由 panic_abort（INT_WDT／RTC WDT／CPU lockup）——
     // 只有 reset reason 能分辨。1.5.0.176 三次「進檔案傳輸上傳就重開機」的報告全是空原因。
     info += "\nReset reason: " + std::to_string(static_cast<int>(esp_reset_reason())) +

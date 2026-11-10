@@ -448,3 +448,10 @@ STR_DEVICE_INFO: "Device Info"
 STR_DISPLAY_CHIP: "Display controller"
 STR_SERIAL_NUMBER: "Serial number"
 STR_SERIAL_UNAVAILABLE: "Not available"
+
+STR_BLE_REMOTE: "Bluetooth page turner"
+
+STR_GO_TO_BOOK_PERCENT: "Book progress"
+STR_GO_TO_CHAPTER_PERCENT: "Chapter progress"
+
+STR_CHAPTER_PROGRESS_PERCENTAGE: "Chapter Progress Percentage"
